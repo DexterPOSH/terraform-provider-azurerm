@@ -16,7 +16,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/services/cdn/mgmt/2017-10-12/cdn"
 	"github.com/Azure/azure-sdk-for-go/services/cognitiveservices/mgmt/2017-04-18/cognitiveservices"
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2018-06-01/compute"
-	"github.com/Azure/azure-sdk-for-go/services/containerinstance/mgmt/2018-04-01/containerinstance"
+	"github.com/Azure/azure-sdk-for-go/services/containerinstance/mgmt/2018-06-01/containerinstance"
 	"github.com/Azure/azure-sdk-for-go/services/containerregistry/mgmt/2017-10-01/containerregistry"
 	"github.com/Azure/azure-sdk-for-go/services/containerservice/mgmt/2018-03-31/containerservice"
 	"github.com/Azure/azure-sdk-for-go/services/cosmos-db/mgmt/2015-04-08/documentdb"
@@ -46,6 +46,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/services/preview/resources/mgmt/2018-03-01-preview/management"
 	"github.com/Azure/azure-sdk-for-go/services/preview/security/mgmt/2017-08-01-preview/security"
 	"github.com/Azure/azure-sdk-for-go/services/preview/sql/mgmt/2015-05-01-preview/sql"
+	"github.com/Azure/azure-sdk-for-go/services/recoveryservices/mgmt/2016-06-01/backup"
 	"github.com/Azure/azure-sdk-for-go/services/recoveryservices/mgmt/2016-06-01/recoveryservices"
 	"github.com/Azure/azure-sdk-for-go/services/redis/mgmt/2018-03-01/redis"
 	"github.com/Azure/azure-sdk-for-go/services/relay/mgmt/2017-04-01/relay"
@@ -242,7 +243,9 @@ type ArmClient struct {
 	notificationNamespacesClient notificationhubs.NamespacesClient
 
 	// Recovery Services
-	recoveryServicesVaultsClient recoveryservices.VaultsClient
+	recoveryServicesVaultsClient             recoveryservices.VaultsClient
+	recoveryServicesProtectedItemsClient     backup.ProtectedItemsClient
+	recoveryServicesProtectionPoliciesClient backup.ProtectionPoliciesClient
 
 	// Relay
 	relayNamespacesClient relay.NamespacesClient
@@ -999,6 +1002,14 @@ func (c *ArmClient) registerRecoveryServiceClients(endpoint, subscriptionId stri
 	vaultsClient := recoveryservices.NewVaultsClientWithBaseURI(endpoint, subscriptionId)
 	c.configureClient(&vaultsClient.Client, auth)
 	c.recoveryServicesVaultsClient = vaultsClient
+
+	protectedItemsClient := backup.NewProtectedItemsClientWithBaseURI(endpoint, subscriptionId)
+	c.configureClient(&protectedItemsClient.Client, auth)
+	c.recoveryServicesProtectedItemsClient = protectedItemsClient
+
+	protectionPoliciesClient := backup.NewProtectionPoliciesClientWithBaseURI(endpoint, subscriptionId)
+	c.configureClient(&protectionPoliciesClient.Client, auth)
+	c.recoveryServicesProtectionPoliciesClient = protectionPoliciesClient
 }
 
 func (c *ArmClient) registerRedisClients(endpoint, subscriptionId string, auth autorest.Authorizer, sender autorest.Sender) {
