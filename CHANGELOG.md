@@ -1,4 +1,11 @@
-## 1.18.0 (Unreleased)
+## 1.17.1 (Unreleased)
+
+BUG FIXES:
+
+* `azurerm_function_app` - correctly marking the resource as missing upon manual deletion [GH-2111]
+* `azurerm_public_ip` - `domain_name_label` validation now allows 63 characters [GH-2122]
+
+
 ## 1.17.0 (October 18, 2018)
 
 UPGRADE NOTES:
