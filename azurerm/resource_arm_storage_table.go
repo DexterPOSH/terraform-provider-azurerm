@@ -9,6 +9,8 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/storage"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/helpers/azure"
+	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/helpers/tf"
 )
 
 func resourceArmStorageTable() *schema.Resource {
@@ -29,7 +31,7 @@ func resourceArmStorageTable() *schema.Resource {
 				ForceNew:     true,
 				ValidateFunc: validateArmStorageTableName,
 			},
-			"resource_group_name": resourceGroupNameSchema(),
+			"resource_group_name": azure.SchemaResourceGroupName(),
 			"storage_account_name": {
 				Type:     schema.TypeString,
 				Required: true,
@@ -39,7 +41,7 @@ func resourceArmStorageTable() *schema.Resource {
 	}
 }
 
-func validateArmStorageTableName(v interface{}, k string) (ws []string, errors []error) {
+func validateArmStorageTableName(v interface{}, k string) (warnings []string, errors []error) {
 	value := v.(string)
 	if value == "table" {
 		errors = append(errors, fmt.Errorf(
@@ -52,7 +54,7 @@ func validateArmStorageTableName(v interface{}, k string) (ws []string, errors [
 			k, value))
 	}
 
-	return
+	return warnings, errors
 }
 
 func resourceArmStorageTableCreate(d *schema.ResourceData, meta interface{}) error {
@@ -73,9 +75,24 @@ func resourceArmStorageTableCreate(d *schema.ResourceData, meta interface{}) err
 	}
 
 	table := tableClient.GetTableReference(name)
+	id := fmt.Sprintf("https://%s.table.%s/%s", storageAccountName, environment.StorageEndpointSuffix, name)
+
+	if requireResourcesToBeImported {
+		metaDataLevel := storage.MinimalMetadata
+		options := &storage.QueryTablesOptions{}
+		tables, e := tableClient.QueryTables(metaDataLevel, options)
+		if e != nil {
+			return fmt.Errorf("Error checking if Table %q exists (Account %q / Resource Group %q): %s", name, storageAccountName, resourceGroupName, e)
+		}
+
+		for _, table := range tables.Tables {
+			if table.Name == name {
+				return tf.ImportAsExistsError("azurerm_storage_table", id)
+			}
+		}
+	}
 
 	log.Printf("[INFO] Creating table %q in storage account %q.", name, storageAccountName)
-
 	timeout := uint(60)
 	options := &storage.TableOptions{}
 	err = table.Create(timeout, storage.NoMetadata, options)
@@ -83,7 +100,6 @@ func resourceArmStorageTableCreate(d *schema.ResourceData, meta interface{}) err
 		return fmt.Errorf("Error creating table %q in storage account %q: %s", name, storageAccountName, err)
 	}
 
-	id := fmt.Sprintf("https://%s.table.%s/%s", storageAccountName, environment.StorageEndpointSuffix, name)
 	d.SetId(id)
 	return resourceArmStorageTableRead(d, meta)
 }

@@ -8,7 +8,10 @@ import (
 	"github.com/Azure/azure-sdk-for-go/services/databricks/mgmt/2018-04-01/databricks"
 	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/hashicorp/terraform/helper/validation"
+	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/helpers/azure"
 	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/helpers/response"
+	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/helpers/tf"
+	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/helpers/validate"
 	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/utils"
 )
 
@@ -30,21 +33,29 @@ func resourceArmDatabricksWorkspace() *schema.Resource {
 				ValidateFunc: validateDatabricksWorkspaceName,
 			},
 
-			"location": locationSchema(),
+			"location": azure.SchemaLocation(),
 
-			"resource_group_name": resourceGroupNameSchema(),
+			"resource_group_name": azure.SchemaResourceGroupName(),
 
 			"sku": {
 				Type:     schema.TypeString,
 				Required: true,
 				ForceNew: true,
 				ValidateFunc: validation.StringInSlice([]string{
-					"Standard",
-					"Premium",
+					"standard",
+					"premium",
 				}, false),
 			},
 
 			"tags": tagsSchema(),
+
+			"managed_resource_group_name": {
+				Type:         schema.TypeString,
+				Optional:     true,
+				ForceNew:     true,
+				Computed:     true,
+				ValidateFunc: validate.NoEmptyStrings,
+			},
 
 			"managed_resource_group_id": {
 				Type:     schema.TypeString,
@@ -55,21 +66,44 @@ func resourceArmDatabricksWorkspace() *schema.Resource {
 }
 
 func resourceArmDatabricksWorkspaceCreateUpdate(d *schema.ResourceData, meta interface{}) error {
-	client := meta.(*ArmClient).databricksWorkspacesClient
+	client := meta.(*ArmClient).databricks.WorkspacesClient
 	ctx := meta.(*ArmClient).StopContext
 	subscriptionID := meta.(*ArmClient).subscriptionId
 
 	log.Printf("[INFO] preparing arguments for Azure ARM Databricks Workspace creation.")
 
 	name := d.Get("name").(string)
-	location := azureRMNormalizeLocation(d.Get("location").(string))
 	resourceGroup := d.Get("resource_group_name").(string)
-	skuName := d.Get("sku").(string)
 
+	if requireResourcesToBeImported && d.IsNewResource() {
+		existing, err := client.Get(ctx, resourceGroup, name)
+		if err != nil {
+			if !utils.ResponseWasNotFound(existing.Response) {
+				return fmt.Errorf("Error checking for presence of existing Databricks Workspace %q (Resource Group %q): %s", name, resourceGroup, err)
+			}
+		}
+
+		if existing.ID != nil && *existing.ID != "" {
+			return tf.ImportAsExistsError("azurerm_databricks_workspace", *existing.ID)
+		}
+	}
+
+	skuName := d.Get("sku").(string)
+	managedResourceGroupName := d.Get("managed_resource_group_name").(string)
+	var managedResourceGroupID string
+
+	location := azure.NormalizeLocation(d.Get("location").(string))
 	tags := d.Get("tags").(map[string]interface{})
 	expandedTags := expandTags(tags)
 
-	managedResourceGroupID := fmt.Sprintf("/subscriptions/%s/resourceGroups/databricks-rg-%s", subscriptionID, resourceGroup)
+	if managedResourceGroupName == "" {
+		//no managed resource group name was provided, we use the default pattern
+		log.Printf("[DEBUG][azurerm_databricks_workspace] no managed resource group id was provided, we use the default pattern.")
+		managedResourceGroupID = fmt.Sprintf("/subscriptions/%s/resourceGroups/databricks-rg-%s", subscriptionID, resourceGroup)
+	} else {
+		log.Printf("[DEBUG][azurerm_databricks_workspace] a managed group name was provided: %q", managedResourceGroupName)
+		managedResourceGroupID = fmt.Sprintf("/subscriptions/%s/resourceGroups/%s", subscriptionID, managedResourceGroupName)
+	}
 
 	workspace := databricks.Workspace{
 		Sku: &databricks.Sku{
@@ -87,8 +121,7 @@ func resourceArmDatabricksWorkspaceCreateUpdate(d *schema.ResourceData, meta int
 		return fmt.Errorf("Error creating/updating Databricks Workspace %q (Resource Group %q): %+v", name, resourceGroup, err)
 	}
 
-	err = future.WaitForCompletionRef(ctx, client.Client)
-	if err != nil {
+	if err = future.WaitForCompletionRef(ctx, client.Client); err != nil {
 		return fmt.Errorf("Error waiting for the completion of the creating/updating of Databricks Workspace %q (Resource Group %q): %+v", name, resourceGroup, err)
 	}
 
@@ -106,7 +139,7 @@ func resourceArmDatabricksWorkspaceCreateUpdate(d *schema.ResourceData, meta int
 }
 
 func resourceArmDatabricksWorkspaceRead(d *schema.ResourceData, meta interface{}) error {
-	client := meta.(*ArmClient).databricksWorkspacesClient
+	client := meta.(*ArmClient).databricks.WorkspacesClient
 	ctx := meta.(*ArmClient).StopContext
 
 	id, err := parseAzureResourceID(d.Id())
@@ -132,7 +165,7 @@ func resourceArmDatabricksWorkspaceRead(d *schema.ResourceData, meta interface{}
 	d.Set("resource_group_name", resourceGroup)
 
 	if location := resp.Location; location != nil {
-		d.Set("location", azureRMNormalizeLocation(*location))
+		d.Set("location", azure.NormalizeLocation(*location))
 	}
 
 	if sku := resp.Sku; sku != nil {
@@ -140,7 +173,12 @@ func resourceArmDatabricksWorkspaceRead(d *schema.ResourceData, meta interface{}
 	}
 
 	if props := resp.WorkspaceProperties; props != nil {
+		managedResourceGroupID, err := parseAzureResourceID(*props.ManagedResourceGroupID)
+		if err != nil {
+			return err
+		}
 		d.Set("managed_resource_group_id", props.ManagedResourceGroupID)
+		d.Set("managed_resource_group_name", managedResourceGroupID.ResourceGroup)
 	}
 
 	flattenAndSetTags(d, resp.Tags)
@@ -149,7 +187,7 @@ func resourceArmDatabricksWorkspaceRead(d *schema.ResourceData, meta interface{}
 }
 
 func resourceArmDatabricksWorkspaceDelete(d *schema.ResourceData, meta interface{}) error {
-	client := meta.(*ArmClient).databricksWorkspacesClient
+	client := meta.(*ArmClient).databricks.WorkspacesClient
 	ctx := meta.(*ArmClient).StopContext
 
 	id, err := parseAzureResourceID(d.Id())
@@ -165,8 +203,7 @@ func resourceArmDatabricksWorkspaceDelete(d *schema.ResourceData, meta interface
 		return fmt.Errorf("Error deleting Databricks Workspace %q (Resource Group %q): %+v", name, resGroup, err)
 	}
 
-	err = future.WaitForCompletionRef(ctx, client.Client)
-	if err != nil {
+	if err = future.WaitForCompletionRef(ctx, client.Client); err != nil {
 		if !response.WasNotFound(future.Response()) {
 			return fmt.Errorf("Error waiting for deletion of Databricks Workspace %q (Resource Group %q): %+v", name, resGroup, err)
 		}
@@ -175,29 +212,31 @@ func resourceArmDatabricksWorkspaceDelete(d *schema.ResourceData, meta interface
 	return nil
 }
 
-func validateDatabricksWorkspaceName(v interface{}, k string) (ws []string, errors []error) {
-	value := v.(string)
-
-	// Only alphanumeric characters, underscores, and hyphens are allowed, and the name must be 1-30 characters long.
+func validateDatabricksWorkspaceName(i interface{}, k string) (warnings []string, errors []error) {
+	v, ok := i.(string)
+	if !ok {
+		errors = append(errors, fmt.Errorf("expected %q type to be string", k))
+		return warnings, errors
+	}
 
 	// Cannot be empty
-	if len(value) == 0 {
-		errors = append(errors, fmt.Errorf(
-			"%q cannot be an empty string: %q", k, value))
+	if len(v) == 0 {
+		errors = append(errors, fmt.Errorf("%q cannot be an empty string: %q", k, v))
+		return warnings, errors
 	}
 
-	// Cannot be more than 128 characters
-	if len(value) > 30 {
-		errors = append(errors, fmt.Errorf(
-			"%q cannot be longer than 128 characters: %q", k, value))
+	// First, second, and last characters must be a letter or number with a total length between 3 to 64 characters
+	// NOTE: Restricted name to 30 characters because that is the restriction in Azure Portal even though the API supports 64 characters
+	if !regexp.MustCompile("^[a-zA-Z0-9]{2}[-a-zA-Z0-9]{0,27}[a-zA-Z0-9]{1}$").MatchString(v) {
+		errors = append(errors, fmt.Errorf("%q must be 3 - 30 characters in length", k))
+		errors = append(errors, fmt.Errorf("%q first, second, and last characters must be a letter or number", k))
+		errors = append(errors, fmt.Errorf("%q can only contain letters, numbers, and hyphens", k))
 	}
 
-	// Must only contain alphanumeric characters or hyphens
-	if !regexp.MustCompile(`^[A-Za-z0-9-]*$`).MatchString(value) {
-		errors = append(errors, fmt.Errorf(
-			"%q can only contain alphanumeric characters and hyphens: %q",
-			k, value))
+	// No consecutive hyphens
+	if regexp.MustCompile("(--)").MatchString(v) {
+		errors = append(errors, fmt.Errorf("%q must not contain any consecutive hyphens", k))
 	}
 
-	return
+	return warnings, errors
 }

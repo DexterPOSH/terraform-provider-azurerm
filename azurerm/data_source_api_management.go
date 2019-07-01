@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Azure/azure-sdk-for-go/services/preview/apimanagement/mgmt/2018-06-01-preview/apimanagement"
+	"github.com/Azure/azure-sdk-for-go/services/apimanagement/mgmt/2018-01-01/apimanagement"
 	"github.com/hashicorp/terraform/helper/schema"
-	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/helpers/validate"
+	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/helpers/azure"
 	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/utils"
 )
 
@@ -15,15 +15,19 @@ func dataSourceApiManagementService() *schema.Resource {
 		Read: dataSourceApiManagementRead,
 
 		Schema: map[string]*schema.Schema{
-			"name": {
-				Type:         schema.TypeString,
-				Required:     true,
-				ValidateFunc: validate.ApiManagementServiceName,
+			"name": azure.SchemaApiManagementDataSourceName(),
+
+			"resource_group_name": azure.SchemaResourceGroupNameForDataSource(),
+
+			"location": azure.SchemaLocationForDataSource(),
+
+			"public_ip_addresses": {
+				Type:     schema.TypeList,
+				Computed: true,
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
 			},
-
-			"resource_group_name": resourceGroupNameForDataSourceSchema(),
-
-			"location": locationForDataSourceSchema(),
 
 			"publisher_name": {
 				Type:     schema.TypeString,
@@ -87,7 +91,7 @@ func dataSourceApiManagementService() *schema.Resource {
 				Computed: true,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
-						"location": locationForDataSourceSchema(),
+						"location": azure.SchemaLocationForDataSource(),
 
 						"gateway_regional_url": {
 							Type:     schema.TypeString,
@@ -148,7 +152,7 @@ func dataSourceApiManagementService() *schema.Resource {
 }
 
 func dataSourceApiManagementRead(d *schema.ResourceData, meta interface{}) error {
-	client := meta.(*ArmClient).apiManagementServiceClient
+	client := meta.(*ArmClient).apiManagement.ServiceClient
 
 	name := d.Get("name").(string)
 	resourceGroup := d.Get("resource_group_name").(string)
@@ -170,7 +174,7 @@ func dataSourceApiManagementRead(d *schema.ResourceData, meta interface{}) error
 	d.Set("resource_group_name", resourceGroup)
 
 	if location := resp.Location; location != nil {
-		d.Set("location", azureRMNormalizeLocation(*location))
+		d.Set("location", azure.NormalizeLocation(*location))
 	}
 
 	if props := resp.ServiceProperties; props != nil {
@@ -195,7 +199,7 @@ func dataSourceApiManagementRead(d *schema.ResourceData, meta interface{}) error
 	}
 
 	if err := d.Set("sku", flattenDataSourceApiManagementServiceSku(resp.Sku)); err != nil {
-		return fmt.Errorf("Error flattening `sku`: %+v", err)
+		return fmt.Errorf("Error setting `sku`: %+v", err)
 	}
 
 	flattenAndSetTags(d, resp.Tags)
@@ -215,7 +219,7 @@ func flattenDataSourceApiManagementHostnameConfigurations(input *[]apimanagement
 	scmResults := make([]interface{}, 0)
 
 	for _, config := range *input {
-		output := make(map[string]interface{}, 0)
+		output := make(map[string]interface{})
 
 		if config.HostName != nil {
 			output["host_name"] = *config.HostName
@@ -236,27 +240,23 @@ func flattenDataSourceApiManagementHostnameConfigurations(input *[]apimanagement
 				output["default_ssl_binding"] = *config.DefaultSslBinding
 			}
 			proxyResults = append(proxyResults, output)
-			break
 
 		case strings.ToLower(string(apimanagement.Management)):
 			managementResults = append(managementResults, output)
-			break
 
 		case strings.ToLower(string(apimanagement.Portal)):
 			portalResults = append(portalResults, output)
-			break
 
 		case strings.ToLower(string(apimanagement.Scm)):
 			scmResults = append(scmResults, output)
-			break
 		}
 	}
 
 	return []interface{}{
 		map[string]interface{}{
 			"management": managementResults,
-			"portal":     proxyResults,
-			"proxy":      portalResults,
+			"portal":     portalResults,
+			"proxy":      proxyResults,
 			"scm":        scmResults,
 		},
 	}
@@ -269,10 +269,10 @@ func flattenDataSourceApiManagementAdditionalLocations(input *[]apimanagement.Ad
 	}
 
 	for _, prop := range *input {
-		output := make(map[string]interface{}, 0)
+		output := make(map[string]interface{})
 
 		if prop.Location != nil {
-			output["location"] = azureRMNormalizeLocation(*prop.Location)
+			output["location"] = azure.NormalizeLocation(*prop.Location)
 		}
 
 		if prop.PublicIPAddresses != nil {
@@ -294,7 +294,7 @@ func flattenDataSourceApiManagementServiceSku(profile *apimanagement.ServiceSkuP
 		return []interface{}{}
 	}
 
-	sku := make(map[string]interface{}, 0)
+	sku := make(map[string]interface{})
 
 	sku["name"] = string(profile.Name)
 

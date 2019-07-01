@@ -11,10 +11,11 @@ import (
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/hashicorp/terraform/helper/validation"
-	"github.com/satori/go.uuid"
+	uuid "github.com/satori/go.uuid"
 	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/helpers/azure"
 	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/helpers/response"
 	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/helpers/set"
+	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/helpers/tf"
 	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/utils"
 )
 
@@ -31,9 +32,11 @@ func resourceArmKeyVault() *schema.Resource {
 		Read:   resourceArmKeyVaultRead,
 		Update: resourceArmKeyVaultCreateUpdate,
 		Delete: resourceArmKeyVaultDelete,
+
 		Importer: &schema.ResourceImporter{
 			State: schema.ImportStatePassthrough,
 		},
+
 		MigrateState:  resourceAzureRMKeyVaultMigrateState,
 		SchemaVersion: 1,
 
@@ -45,18 +48,23 @@ func resourceArmKeyVault() *schema.Resource {
 				ValidateFunc: validateKeyVaultName,
 			},
 
-			"location": locationSchema(),
+			"location": azure.SchemaLocation(),
 
-			"resource_group_name": resourceGroupNameSchema(),
+			"resource_group_name": azure.SchemaResourceGroupName(),
 
+			// Remove in 2.0
 			"sku": {
-				Type:     schema.TypeList,
-				Required: true,
+				Type:          schema.TypeList,
+				Optional:      true,
+				Computed:      true,
+				Deprecated:    "This property has been deprecated in favour of the 'sku_name' property and will be removed in version 2.0 of the provider",
+				ConflictsWith: []string{"sku_name"},
+				MaxItems:      1,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"name": {
 							Type:     schema.TypeString,
-							Required: true,
+							Optional: true,
 							ValidateFunc: validation.StringInSlice([]string{
 								string(keyvault.Standard),
 								string(keyvault.Premium),
@@ -64,6 +72,16 @@ func resourceArmKeyVault() *schema.Resource {
 						},
 					},
 				},
+			},
+
+			"sku_name": {
+				Type:     schema.TypeString,
+				Optional: true,
+				Computed: true,
+				ValidateFunc: validation.StringInSlice([]string{
+					string(keyvault.Standard),
+					string(keyvault.Premium),
+				}, false),
 			},
 
 			"vault_uri": {
@@ -78,10 +96,11 @@ func resourceArmKeyVault() *schema.Resource {
 			},
 
 			"access_policy": {
-				Type:     schema.TypeList,
-				Optional: true,
-				Computed: true,
-				MaxItems: 16,
+				Type:       schema.TypeList,
+				ConfigMode: schema.SchemaConfigModeAttr,
+				Optional:   true,
+				Computed:   true,
+				MaxItems:   1024,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"tenant_id": {
@@ -102,6 +121,7 @@ func resourceArmKeyVault() *schema.Resource {
 						"certificate_permissions": azure.SchemaKeyVaultCertificatePermissions(),
 						"key_permissions":         azure.SchemaKeyVaultKeyPermissions(),
 						"secret_permissions":      azure.SchemaKeyVaultSecretPermissions(),
+						"storage_permissions":     azure.SchemaKeyVaultStoragePermissions(),
 					},
 				},
 			},
@@ -167,11 +187,49 @@ func resourceArmKeyVault() *schema.Resource {
 func resourceArmKeyVaultCreateUpdate(d *schema.ResourceData, meta interface{}) error {
 	client := meta.(*ArmClient).keyVaultClient
 	ctx := meta.(*ArmClient).StopContext
+
+	// Remove in 2.0
+	var sku keyvault.Sku
+
+	if inputs := d.Get("sku").([]interface{}); len(inputs) != 0 {
+		input := inputs[0].(map[string]interface{})
+		v := input["name"].(string)
+
+		sku = keyvault.Sku{
+			Family: &armKeyVaultSkuFamily,
+			Name:   keyvault.SkuName(v),
+		}
+	} else {
+		// Keep in 2.0
+		sku = keyvault.Sku{
+			Family: &armKeyVaultSkuFamily,
+			Name:   keyvault.SkuName(d.Get("sku_name").(string)),
+		}
+	}
+
+	if sku.Name == "" {
+		return fmt.Errorf("either 'sku_name' or 'sku' must be defined in the configuration file")
+	}
+
 	log.Printf("[INFO] preparing arguments for Azure ARM KeyVault creation.")
 
 	name := d.Get("name").(string)
 	resourceGroup := d.Get("resource_group_name").(string)
-	location := azureRMNormalizeLocation(d.Get("location").(string))
+
+	if requireResourcesToBeImported && d.IsNewResource() {
+		existing, err := client.Get(ctx, resourceGroup, name)
+		if err != nil {
+			if !utils.ResponseWasNotFound(existing.Response) {
+				return fmt.Errorf("Error checking for presence of existing Key Vault %q (Resource Group %q): %s", name, resourceGroup, err)
+			}
+		}
+
+		if existing.ID != nil && *existing.ID != "" {
+			return tf.ImportAsExistsError("azurerm_key_vault", *existing.ID)
+		}
+	}
+
+	location := azure.NormalizeLocation(d.Get("location").(string))
 	tenantUUID := uuid.FromStringOrNil(d.Get("tenant_id").(string))
 	enabledForDeployment := d.Get("enabled_for_deployment").(bool)
 	enabledForDiskEncryption := d.Get("enabled_for_disk_encryption").(bool)
@@ -191,7 +249,7 @@ func resourceArmKeyVaultCreateUpdate(d *schema.ResourceData, meta interface{}) e
 		Location: &location,
 		Properties: &keyvault.VaultProperties{
 			TenantID:                     &tenantUUID,
-			Sku:                          expandKeyVaultSku(d),
+			Sku:                          &sku,
 			AccessPolicies:               accessPolicies,
 			EnabledForDeployment:         &enabledForDeployment,
 			EnabledForDiskEncryption:     &enabledForDiskEncryption,
@@ -209,20 +267,21 @@ func resourceArmKeyVaultCreateUpdate(d *schema.ResourceData, meta interface{}) e
 	// also lock on the Virtual Network ID's since modifications in the networking stack are exclusive
 	virtualNetworkNames := make([]string, 0)
 	for _, v := range subnetIds {
-		id, err := parseAzureResourceID(v)
-		if err != nil {
-			return err
+		id, err2 := parseAzureResourceID(v)
+		if err2 != nil {
+			return err2
 		}
 
 		virtualNetworkName := id.Path["virtualNetworks"]
-		virtualNetworkNames = append(virtualNetworkNames, virtualNetworkName)
+		if !sliceContainsValue(virtualNetworkNames, virtualNetworkName) {
+			virtualNetworkNames = append(virtualNetworkNames, virtualNetworkName)
+		}
 	}
 
 	azureRMLockMultipleByName(&virtualNetworkNames, virtualNetworkResourceName)
 	defer azureRMUnlockMultipleByName(&virtualNetworkNames, virtualNetworkResourceName)
 
-	_, err = client.CreateOrUpdate(ctx, resourceGroup, name, parameters)
-	if err != nil {
+	if _, err = client.CreateOrUpdate(ctx, resourceGroup, name, parameters); err != nil {
 		return fmt.Errorf("Error updating Key Vault %q (Resource Group %q): %+v", name, resourceGroup, err)
 	}
 
@@ -284,7 +343,7 @@ func resourceArmKeyVaultRead(d *schema.ResourceData, meta interface{}) error {
 	d.Set("name", resp.Name)
 	d.Set("resource_group_name", resourceGroup)
 	if location := resp.Location; location != nil {
-		d.Set("location", azureRMNormalizeLocation(*location))
+		d.Set("location", azure.NormalizeLocation(*location))
 	}
 
 	if props := resp.Properties; props != nil {
@@ -294,17 +353,26 @@ func resourceArmKeyVaultRead(d *schema.ResourceData, meta interface{}) error {
 		d.Set("enabled_for_template_deployment", props.EnabledForTemplateDeployment)
 		d.Set("vault_uri", props.VaultURI)
 
-		if err := d.Set("sku", flattenKeyVaultSku(props.Sku)); err != nil {
-			return fmt.Errorf("Error flattening `sku` for KeyVault %q: %+v", *resp.Name, err)
+		if sku := props.Sku; sku != nil {
+			// Remove in 2.0
+			if err := d.Set("sku", flattenKeyVaultSku(sku)); err != nil {
+				return fmt.Errorf("Error setting 'sku' for KeyVault %q: %+v", *resp.Name, err)
+			}
+
+			if err := d.Set("sku_name", string(sku.Name)); err != nil {
+				return fmt.Errorf("Error setting 'sku_name' for KeyVault %q: %+v", *resp.Name, err)
+			}
+		} else {
+			return fmt.Errorf("Error making Read request on KeyVault %q (Resource Group %q): Unable to retrieve 'sku' value", name, resourceGroup)
 		}
 
 		if err := d.Set("network_acls", flattenKeyVaultNetworkAcls(props.NetworkAcls)); err != nil {
-			return fmt.Errorf("Error flattening `network_acls` for KeyVault %q: %+v", *resp.Name, err)
+			return fmt.Errorf("Error setting `network_acls` for KeyVault %q: %+v", *resp.Name, err)
 		}
 
 		flattenedPolicies := azure.FlattenKeyVaultAccessPolicies(props.AccessPolicies)
 		if err := d.Set("access_policy", flattenedPolicies); err != nil {
-			return fmt.Errorf("Error flattening `access_policy` for KeyVault %q: %+v", *resp.Name, err)
+			return fmt.Errorf("Error setting `access_policy` for KeyVault %q: %+v", *resp.Name, err)
 		}
 	}
 
@@ -345,13 +413,15 @@ func resourceArmKeyVaultDelete(d *schema.ResourceData, meta interface{}) error {
 						continue
 					}
 
-					id, err := parseAzureResourceID(*v.ID)
-					if err != nil {
-						return err
+					id, err2 := parseAzureResourceID(*v.ID)
+					if err2 != nil {
+						return err2
 					}
 
-					networkName := id.Path["virtualNetworks"]
-					virtualNetworkNames = append(virtualNetworkNames, networkName)
+					virtualNetworkName := id.Path["virtualNetworks"]
+					if !sliceContainsValue(virtualNetworkNames, virtualNetworkName) {
+						virtualNetworkNames = append(virtualNetworkNames, virtualNetworkName)
+					}
 				}
 			}
 		}
@@ -370,16 +440,7 @@ func resourceArmKeyVaultDelete(d *schema.ResourceData, meta interface{}) error {
 	return nil
 }
 
-func expandKeyVaultSku(d *schema.ResourceData) *keyvault.Sku {
-	skuSets := d.Get("sku").([]interface{})
-	sku := skuSets[0].(map[string]interface{})
-
-	return &keyvault.Sku{
-		Family: &armKeyVaultSkuFamily,
-		Name:   keyvault.SkuName(sku["name"].(string)),
-	}
-}
-
+// Remove in 2.0
 func flattenKeyVaultSku(sku *keyvault.Sku) []interface{} {
 	result := map[string]interface{}{
 		"name": string(sku.Name),
@@ -393,7 +454,7 @@ func flattenKeyVaultNetworkAcls(input *keyvault.NetworkRuleSet) []interface{} {
 		return []interface{}{}
 	}
 
-	output := make(map[string]interface{}, 0)
+	output := make(map[string]interface{})
 
 	output["bypass"] = string(input.Bypass)
 	output["default_action"] = string(input.DefaultAction)
@@ -425,13 +486,13 @@ func flattenKeyVaultNetworkAcls(input *keyvault.NetworkRuleSet) []interface{} {
 	return []interface{}{output}
 }
 
-func validateKeyVaultName(v interface{}, k string) (ws []string, errors []error) {
+func validateKeyVaultName(v interface{}, k string) (warnings []string, errors []error) {
 	value := v.(string)
 	if matched := regexp.MustCompile(`^[a-zA-Z0-9-]{3,24}$`).Match([]byte(value)); !matched {
 		errors = append(errors, fmt.Errorf("%q may only contain alphanumeric characters and dashes and must be between 3-24 chars", k))
 	}
 
-	return
+	return warnings, errors
 }
 
 func keyVaultRefreshFunc(vaultUri string) resource.StateRefreshFunc {

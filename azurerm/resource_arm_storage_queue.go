@@ -9,6 +9,8 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/storage"
 	"github.com/hashicorp/terraform/helper/schema"
+	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/helpers/azure"
+	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/helpers/tf"
 )
 
 func resourceArmStorageQueue() *schema.Resource {
@@ -29,7 +31,7 @@ func resourceArmStorageQueue() *schema.Resource {
 				ForceNew:     true,
 				ValidateFunc: validateArmStorageQueueName,
 			},
-			"resource_group_name": resourceGroupNameSchema(),
+			"resource_group_name": azure.SchemaResourceGroupName(),
 			"storage_account_name": {
 				Type:     schema.TypeString,
 				Required: true,
@@ -39,7 +41,7 @@ func resourceArmStorageQueue() *schema.Resource {
 	}
 }
 
-func validateArmStorageQueueName(v interface{}, k string) (ws []string, errors []error) {
+func validateArmStorageQueueName(v interface{}, k string) (warnings []string, errors []error) {
 	value := v.(string)
 
 	if !regexp.MustCompile(`^[a-z0-9-]+$`).MatchString(value) {
@@ -65,7 +67,7 @@ func validateArmStorageQueueName(v interface{}, k string) (ws []string, errors [
 			"%q must be at least 3 characters", k))
 	}
 
-	return
+	return warnings, errors
 }
 
 func resourceArmStorageQueueCreate(d *schema.ResourceData, meta interface{}) error {
@@ -85,15 +87,26 @@ func resourceArmStorageQueueCreate(d *schema.ResourceData, meta interface{}) err
 		return fmt.Errorf("Storage Account %q Not Found", storageAccountName)
 	}
 
-	log.Printf("[INFO] Creating queue %q in storage account %q", name, storageAccountName)
 	queueReference := queueClient.GetQueueReference(name)
+	id := fmt.Sprintf("https://%s.queue.%s/%s", storageAccountName, environment.StorageEndpointSuffix, name)
+	if requireResourcesToBeImported {
+		exists, e := queueReference.Exists()
+		if e != nil {
+			return fmt.Errorf("Error checking if Queue %q exists (Account %q / Resource Group %q): %s", name, storageAccountName, resourceGroupName, e)
+		}
+
+		if exists {
+			return tf.ImportAsExistsError("azurerm_storage_queue", id)
+		}
+	}
+
+	log.Printf("[INFO] Creating queue %q in storage account %q", name, storageAccountName)
 	options := &storage.QueueServiceOptions{}
 	err = queueReference.Create(options)
 	if err != nil {
 		return fmt.Errorf("Error creating storage queue on Azure: %s", err)
 	}
 
-	id := fmt.Sprintf("https://%s.queue.%s/%s", storageAccountName, environment.StorageEndpointSuffix, name)
 	d.SetId(id)
 	return resourceArmStorageQueueRead(d, meta)
 }

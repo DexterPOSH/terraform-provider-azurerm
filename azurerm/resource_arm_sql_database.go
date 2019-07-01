@@ -6,12 +6,16 @@ import (
 	"strings"
 	"time"
 
+	uuid "github.com/satori/go.uuid"
+	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/helpers/azure"
+	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/helpers/tf"
+
 	"github.com/Azure/azure-sdk-for-go/services/preview/sql/mgmt/2015-05-01-preview/sql"
 	"github.com/Azure/go-autorest/autorest/date"
 	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/hashicorp/terraform/helper/validation"
-	"github.com/satori/go.uuid"
 	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/helpers/suppress"
+	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/helpers/validate"
 	"github.com/terraform-providers/terraform-provider-azurerm/azurerm/utils"
 )
 
@@ -21,31 +25,35 @@ func resourceArmSqlDatabase() *schema.Resource {
 		Read:   resourceArmSqlDatabaseRead,
 		Update: resourceArmSqlDatabaseCreateUpdate,
 		Delete: resourceArmSqlDatabaseDelete,
+
 		Importer: &schema.ResourceImporter{
 			State: schema.ImportStatePassthrough,
 		},
 
 		Schema: map[string]*schema.Schema{
 			"name": {
-				Type:     schema.TypeString,
-				Required: true,
-				ForceNew: true,
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				ValidateFunc: azure.ValidateMsSqlDatabaseName,
 			},
 
-			"location": locationSchema(),
+			"location": azure.SchemaLocation(),
 
-			"resource_group_name": resourceGroupNameSchema(),
+			"resource_group_name": azure.SchemaResourceGroupName(),
 
 			"server_name": {
-				Type:     schema.TypeString,
-				Required: true,
-				ForceNew: true,
+				Type:         schema.TypeString,
+				Required:     true,
+				ForceNew:     true,
+				ValidateFunc: azure.ValidateMsSqlServerName,
 			},
 
 			"create_mode": {
-				Type:     schema.TypeString,
-				Optional: true,
-				Default:  string(sql.Default),
+				Type:             schema.TypeString,
+				Optional:         true,
+				Default:          string(sql.Default),
+				DiffSuppressFunc: suppress.CaseDifference,
 				ValidateFunc: validation.StringInSlice([]string{
 					string(sql.Copy),
 					string(sql.Default),
@@ -56,7 +64,6 @@ func resourceArmSqlDatabase() *schema.Resource {
 					string(sql.Restore),
 					string(sql.RestoreLongTermRetentionBackup),
 				}, true),
-				DiffSuppressFunc: ignoreCaseDiffSuppressFunc,
 			},
 
 			"import": {
@@ -75,13 +82,13 @@ func resourceArmSqlDatabase() *schema.Resource {
 							Sensitive: true,
 						},
 						"storage_key_type": {
-							Type:     schema.TypeString,
-							Required: true,
+							Type:             schema.TypeString,
+							Required:         true,
+							DiffSuppressFunc: suppress.CaseDifference,
 							ValidateFunc: validation.StringInSlice([]string{
 								"StorageAccessKey",
 								"SharedAccessKey",
 							}, true),
-							DiffSuppressFunc: ignoreCaseDiffSuppressFunc,
 						},
 						"administrator_login": {
 							Type:     schema.TypeString,
@@ -93,22 +100,22 @@ func resourceArmSqlDatabase() *schema.Resource {
 							Sensitive: true,
 						},
 						"authentication_type": {
-							Type:     schema.TypeString,
-							Required: true,
+							Type:             schema.TypeString,
+							Required:         true,
+							DiffSuppressFunc: suppress.CaseDifference,
 							ValidateFunc: validation.StringInSlice([]string{
 								"ADPassword",
 								"SQL",
 							}, true),
-							DiffSuppressFunc: ignoreCaseDiffSuppressFunc,
 						},
 						"operation_mode": {
-							Type:     schema.TypeString,
-							Optional: true,
-							Default:  "Import",
+							Type:             schema.TypeString,
+							Optional:         true,
+							Default:          "Import",
+							DiffSuppressFunc: suppress.CaseDifference,
 							ValidateFunc: validation.StringInSlice([]string{
 								"Import",
 							}, true),
-							DiffSuppressFunc: ignoreCaseDiffSuppressFunc,
 						},
 					},
 				},
@@ -124,27 +131,38 @@ func resourceArmSqlDatabase() *schema.Resource {
 				Type:         schema.TypeString,
 				Optional:     true,
 				Computed:     true,
-				ValidateFunc: validateRFC3339Date,
+				ValidateFunc: validate.RFC3339Time,
 			},
 
 			"edition": {
-				Type:     schema.TypeString,
-				Optional: true,
-				Computed: true,
+				Type:             schema.TypeString,
+				Optional:         true,
+				Computed:         true,
+				DiffSuppressFunc: suppress.CaseDifference,
 				ValidateFunc: validation.StringInSlice([]string{
 					string(sql.Basic),
-					string(sql.Standard),
-					string(sql.Premium),
+					string(sql.Business),
+					string(sql.BusinessCritical),
 					string(sql.DataWarehouse),
+					string(sql.Free),
+					string(sql.GeneralPurpose),
+					string(sql.Hyperscale),
+					string(sql.Premium),
+					string(sql.PremiumRS),
+					string(sql.Standard),
+					string(sql.Stretch),
+					string(sql.System),
+					string(sql.System2),
+					string(sql.Web),
 				}, true),
-				DiffSuppressFunc: ignoreCaseDiffSuppressFunc,
 			},
 
 			"collation": {
-				Type:     schema.TypeString,
-				Optional: true,
-				Computed: true,
-				ForceNew: true,
+				Type:             schema.TypeString,
+				DiffSuppressFunc: suppress.CaseDifference,
+				Optional:         true,
+				Computed:         true,
+				ForceNew:         true,
 			},
 
 			"max_size_bytes": {
@@ -157,14 +175,15 @@ func resourceArmSqlDatabase() *schema.Resource {
 				Type:         schema.TypeString,
 				Optional:     true,
 				Computed:     true,
-				ValidateFunc: validateUUID,
+				ValidateFunc: validate.UUID,
 			},
 
 			"requested_service_objective_name": {
 				Type:             schema.TypeString,
 				Optional:         true,
 				Computed:         true,
-				DiffSuppressFunc: ignoreCaseDiffSuppressFunc,
+				DiffSuppressFunc: suppress.CaseDifference,
+				ValidateFunc:     validate.NoEmptyStrings,
 				// TODO: add validation once the Enum's complete
 				// https://github.com/Azure/azure-rest-api-specs/issues/1609
 			},
@@ -173,7 +192,7 @@ func resourceArmSqlDatabase() *schema.Resource {
 				Type:         schema.TypeString,
 				Optional:     true,
 				Computed:     true,
-				ValidateFunc: validateRFC3339Date,
+				ValidateFunc: validate.RFC3339Time,
 			},
 
 			"elastic_pool_name": {
@@ -207,6 +226,7 @@ func resourceArmSqlDatabase() *schema.Resource {
 						"disabled_alerts": {
 							Type:     schema.TypeSet,
 							Optional: true,
+							Set:      schema.HashString,
 							Elem: &schema.Schema{
 								Type: schema.TypeString,
 								ValidateFunc: validation.StringInSlice([]string{
@@ -215,7 +235,6 @@ func resourceArmSqlDatabase() *schema.Resource {
 									"Access_Anomaly",
 								}, true),
 							},
-							Set: schema.HashString,
 						},
 
 						"email_account_admins": {
@@ -260,13 +279,13 @@ func resourceArmSqlDatabase() *schema.Resource {
 							Type:         schema.TypeString,
 							Optional:     true,
 							Sensitive:    true,
-							ValidateFunc: validation.NoZeroValues,
+							ValidateFunc: validate.NoEmptyStrings,
 						},
 
 						"storage_endpoint": {
 							Type:         schema.TypeString,
 							Optional:     true,
-							ValidateFunc: validation.NoZeroValues,
+							ValidateFunc: validate.NoEmptyStrings,
 						},
 
 						"use_server_default": {
@@ -281,6 +300,12 @@ func resourceArmSqlDatabase() *schema.Resource {
 						},
 					},
 				},
+			},
+
+			"read_scale": {
+				Type:     schema.TypeBool,
+				Optional: true,
+				Default:  false,
 			},
 
 			"tags": tagsSchema(),
@@ -309,14 +334,27 @@ func resourceArmSqlDatabase() *schema.Resource {
 
 func resourceArmSqlDatabaseCreateUpdate(d *schema.ResourceData, meta interface{}) error {
 	client := meta.(*ArmClient).sqlDatabasesClient
+	ctx := meta.(*ArmClient).StopContext
 
 	name := d.Get("name").(string)
 	serverName := d.Get("server_name").(string)
 	resourceGroup := d.Get("resource_group_name").(string)
-
-	location := azureRMNormalizeLocation(d.Get("location").(string))
+	location := azure.NormalizeLocation(d.Get("location").(string))
 	createMode := d.Get("create_mode").(string)
 	tags := d.Get("tags").(map[string]interface{})
+
+	if requireResourcesToBeImported && d.IsNewResource() {
+		existing, err := client.Get(ctx, resourceGroup, serverName, name, "")
+		if err != nil {
+			if !utils.ResponseWasNotFound(existing.Response) {
+				return fmt.Errorf("Error checking for presence of existing SQL Database %q (Resource Group %q, Server %q): %+v", name, resourceGroup, serverName, err)
+			}
+		}
+
+		if existing.ID != nil && *existing.ID != "" {
+			return tf.ImportAsExistsError("azurerm_sql_database", *existing.ID)
+		}
+	}
 
 	threatDetection, err := expandArmSqlServerThreatDetectionPolicy(d, location)
 	if err != nil {
@@ -353,9 +391,9 @@ func resourceArmSqlDatabaseCreateUpdate(d *schema.ResourceData, meta interface{}
 
 	if v, ok := d.GetOk("source_database_deletion_date"); ok {
 		sourceDatabaseDeletionString := v.(string)
-		sourceDatabaseDeletionDate, err := date.ParseTime(time.RFC3339, sourceDatabaseDeletionString)
-		if err != nil {
-			return fmt.Errorf("`source_database_deletion_date` wasn't a valid RFC3339 date %q: %+v", sourceDatabaseDeletionString, err)
+		sourceDatabaseDeletionDate, err2 := date.ParseTime(time.RFC3339, sourceDatabaseDeletionString)
+		if err2 != nil {
+			return fmt.Errorf("`source_database_deletion_date` wasn't a valid RFC3339 date %q: %+v", sourceDatabaseDeletionString, err2)
 		}
 
 		properties.DatabaseProperties.SourceDatabaseDeletionDate = &date.Time{
@@ -365,9 +403,9 @@ func resourceArmSqlDatabaseCreateUpdate(d *schema.ResourceData, meta interface{}
 
 	if v, ok := d.GetOk("requested_service_objective_id"); ok {
 		requestedServiceObjectiveID := v.(string)
-		id, err := uuid.FromString(requestedServiceObjectiveID)
-		if err != nil {
-			return fmt.Errorf("`requested_service_objective_id` wasn't a valid UUID %q: %+v", requestedServiceObjectiveID, err)
+		id, err2 := uuid.FromString(requestedServiceObjectiveID)
+		if err2 != nil {
+			return fmt.Errorf("`requested_service_objective_id` wasn't a valid UUID %q: %+v", requestedServiceObjectiveID, err2)
 		}
 		properties.DatabaseProperties.RequestedServiceObjectiveID = &id
 	}
@@ -384,13 +422,22 @@ func resourceArmSqlDatabaseCreateUpdate(d *schema.ResourceData, meta interface{}
 
 	if v, ok := d.GetOk("restore_point_in_time"); ok {
 		restorePointInTime := v.(string)
-		restorePointInTimeDate, err := date.ParseTime(time.RFC3339, restorePointInTime)
-		if err != nil {
-			return fmt.Errorf("`restore_point_in_time` wasn't a valid RFC3339 date %q: %+v", restorePointInTime, err)
+		restorePointInTimeDate, err2 := date.ParseTime(time.RFC3339, restorePointInTime)
+		if err2 != nil {
+			return fmt.Errorf("`restore_point_in_time` wasn't a valid RFC3339 date %q: %+v", restorePointInTime, err2)
 		}
 
 		properties.DatabaseProperties.RestorePointInTime = &date.Time{
 			Time: restorePointInTimeDate,
+		}
+	}
+
+	if v, ok := d.GetOk("read_scale"); ok {
+		readScale := v.(bool)
+		if readScale {
+			properties.DatabaseProperties.ReadScale = sql.ReadScaleEnabled
+		} else {
+			properties.DatabaseProperties.ReadScale = sql.ReadScaleDisabled
 		}
 	}
 
@@ -399,15 +446,13 @@ func resourceArmSqlDatabaseCreateUpdate(d *schema.ResourceData, meta interface{}
 		properties.DatabaseProperties.RequestedServiceObjectiveID = nil
 	}
 
-	ctx := meta.(*ArmClient).StopContext
 	future, err := client.CreateOrUpdate(ctx, resourceGroup, serverName, name, properties)
 	if err != nil {
-		return err
+		return fmt.Errorf("Error issuing create/update request for SQL Database %q (Resource Group %q, Server %q): %+v", name, resourceGroup, serverName, err)
 	}
 
-	err = future.WaitForCompletionRef(ctx, client.Client)
-	if err != nil {
-		return err
+	if err = future.WaitForCompletionRef(ctx, client.Client); err != nil {
+		return fmt.Errorf("Error waiting on create/update future for SQL Database %q (Resource Group %q, Server %q): %+v", name, resourceGroup, serverName, err)
 	}
 
 	if _, ok := d.GetOk("import"); ok {
@@ -415,9 +460,9 @@ func resourceArmSqlDatabaseCreateUpdate(d *schema.ResourceData, meta interface{}
 			return fmt.Errorf("import can only be used when create_mode is Default")
 		}
 		importParameters := expandAzureRmSqlDatabaseImport(d)
-		importFuture, err := client.CreateImportOperation(ctx, resourceGroup, serverName, name, importParameters)
-		if err != nil {
-			return err
+		importFuture, err2 := client.CreateImportOperation(ctx, resourceGroup, serverName, name, importParameters)
+		if err2 != nil {
+			return err2
 		}
 
 		// this is set in config.go, but something sets
@@ -425,15 +470,14 @@ func resourceArmSqlDatabaseCreateUpdate(d *schema.ResourceData, meta interface{}
 		// for most imports
 		client.Client.PollingDuration = 60 * time.Minute
 
-		err = importFuture.WaitForCompletionRef(ctx, client.Client)
-		if err != nil {
+		if err = importFuture.WaitForCompletionRef(ctx, client.Client); err != nil {
 			return err
 		}
 	}
 
 	resp, err := client.Get(ctx, resourceGroup, serverName, name, "")
 	if err != nil {
-		return err
+		return fmt.Errorf("Error issuing get request for SQL Database %q (Resource Group %q, Server %q): %+v", name, resourceGroup, serverName, err)
 	}
 
 	d.SetId(*resp.ID)
@@ -482,7 +526,7 @@ func resourceArmSqlDatabaseRead(d *schema.ResourceData, meta interface{}) error 
 	d.Set("name", resp.Name)
 	d.Set("resource_group_name", resourceGroup)
 	if location := resp.Location; location != nil {
-		d.Set("location", azureRMNormalizeLocation(*location))
+		d.Set("location", azure.NormalizeLocation(*location))
 	}
 
 	d.Set("server_name", serverName)
@@ -515,6 +559,13 @@ func resourceArmSqlDatabaseRead(d *schema.ResourceData, meta interface{}) error 
 		}
 
 		d.Set("encryption", flattenEncryptionStatus(props.TransparentDataEncryption))
+
+		readScale := props.ReadScale
+		if readScale == sql.ReadScaleEnabled {
+			d.Set("read_scale", true)
+		} else {
+			d.Set("read_scale", false)
+		}
 	}
 
 	flattenAndSetTags(d, resp.Tags)
@@ -541,10 +592,6 @@ func resourceArmSqlDatabaseDelete(d *schema.ResourceData, meta interface{}) erro
 			return nil
 		}
 
-		return fmt.Errorf("Error making Read request on Sql Database %s: %+v", name, err)
-	}
-
-	if err != nil {
 		return fmt.Errorf("Error deleting SQL Database: %+v", err)
 	}
 
